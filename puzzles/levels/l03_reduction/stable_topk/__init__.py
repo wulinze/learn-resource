@@ -1,0 +1,2 @@
+"""Stable top-k puzzle."""
+

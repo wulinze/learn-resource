@@ -1,0 +1,2 @@
+"""Fusion puzzles."""
+
