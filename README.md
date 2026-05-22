@@ -1,18 +1,25 @@
 # Tile Kernels
 
-Optimized GPU kernels for LLM operations, built with [TileLang](https://github.com/tile-ai/tilelang). TileLang is a domain-specific language for expressing high-performance GPU kernels in Python, featuring easy migration, agile development, and automatic optimization.
+Tile Kernels is a collection of optimized GPU kernels for LLM workloads, built
+with [TileLang](https://github.com/tile-ai/tilelang). The repository contains
+low-level TileLang kernels, PyTorch-facing wrappers, modeling helpers,
+reference implementations, correctness tests, benchmarks, and learning puzzles.
 
-Most kernels in this project approach the limit of hardware performance regarding the compute intensity and memory bandwidth. Some of them have already been used in internal training and inference scenarios. However, they do not represent best practices and we are actively working on improving the code quality and documentation.
+Most kernels are written for high-throughput training and inference paths. Some
+have been used in internal scenarios, but this repository is still alpha
+software and the APIs are being refined.
 
-## Features
+## Kernel Families
 
-- **Gating** — Top-k expert selection and scoring for Mixture of Experts routing
-- **MoE Routing** — Token-to-expert mapping, fused expansion/reduction and weight normalization
-- **Quantization** — Per-token, per-block, and per-channel FP8/FP4/E5M6 casting with fused SwiGLU+quantization ops
-- **Transpose** — Batched transpose operations
-- **Engram** — Engram gating kernels with fused RMSNorm, forward/backward passes and weight gradient reduction
-- **Manifold HyperConnection** — Hyper-connection kernels including Sinkhorn normalization and mix splitting/application
-- **Modeling** — High-level `torch.autograd.Function` wrappers composing low-level kernels into trainable layers (engram gate, mHC pipeline)
+| Area | What it contains |
+| --- | --- |
+| Transpose | Tiled 2D and batched transpose kernels. |
+| Quantization | Per-token, per-block, and per-channel FP8/FP4/E5M6 casts, scale-factor helpers, dequantization, and SwiGLU fusion. |
+| MoE routing | Top-k gate kernels, grouped routing, expert mapping, fused expand/reduce, TP masking, and routing-weight normalization. |
+| Engram | N-gram hash indexing, Engram gate forward/backward kernels, fused RMSNorm weighting, and weight-gradient reduction. |
+| Manifold HyperConnection | mHC residual expansion, pre/post mix kernels, Sinkhorn normalization, fused inference pre-processing, and multilayer recompute. |
+| Modeling | `torch.autograd.Function` wrappers that compose low-level kernels into trainable Engram and mHC layers. |
+| References | PyTorch reference implementations used for validation and debugging. |
 
 ## Requirements
 
@@ -24,56 +31,132 @@ Most kernels in this project approach the limit of hardware performance regardin
 
 ## Installation
 
-### Install a local development version
+Install a local development checkout:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### Install a release version
+Install the published package:
 
 ```bash
 pip install tile-kernels
 ```
 
-## Testing
+## Quick Example
 
-Tests using pytest:
+```python
+import torch
+import tile_kernels
 
-### Test single test file
+x = torch.randn((4096, 7168), dtype=torch.bfloat16, device="cuda")
 
-```bash
-pytest tests/transpose/test_transpose.py -n 4 # Correctness only with 4 workers
-pytest tests/transpose/test_transpose.py --run-benchmark # Correctness + Benchmarking
+data, scale = tile_kernels.quant.per_token_cast(
+    x,
+    fmt="e4m3",
+    num_per_channels=128,
+    round_sf=True,
+)
+
+restored = tile_kernels.quant.per_token_cast_back(
+    (data, scale),
+    fmt="bf16",
+    num_per_channels=128,
+)
 ```
 
-### Pressure test
+## Testing
+
+Run a correctness test file:
+
+```bash
+pytest tests/transpose/test_transpose.py -n 4
+```
+
+Run correctness and benchmarks for one file:
+
+```bash
+pytest tests/transpose/test_transpose.py --run-benchmark
+```
+
+Run a broader pressure test:
 
 ```bash
 TK_FULL_TEST=1 pytest -n 4 --count 2
 ```
 
+Run a TileLang puzzle test:
+
+```bash
+pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
+TK_PUZZLE_IMPL=starter pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
+```
+
+## Documentation
+
+- [TileLang function interfaces](docs/tilelang_function_interfaces.md): public
+  wrappers, internal JIT factories, macros, and usage scenarios.
+- [TileLang puzzle project](docs/tilelang_puzzle_project.md): learning roadmap
+  and puzzle design notes.
+- [Puzzles README](puzzles/README.md): how to run answer and starter
+  implementations for the standalone exercises.
+
 ## Project Structure
 
 ```txt
-tile_kernels/
-├── moe/        # Mixture of Experts routing related kernels
-├── quant/      # FP8/FP4/E5M6 quantization
-├── transpose/  # Batched transpose
-├── engram/     # Engram gating kernels
-├── mhc/        # Manifold HyperConnection kernels
-├── modeling/   # High-level autograd modeling layers (engram, mHC)
-├── torch/      # PyTorch reference implementations
-└── testing/    # Test and benchmark utilities
+.
+├── tile_kernels/
+│   ├── quant/       # FP8/FP4/E5M6 casting, scale factors, dequant, SwiGLU fusion
+│   ├── moe/         # MoE gating, mapping, fused expand/reduce, TP masking
+│   ├── transpose/   # 2D and batched transpose kernels
+│   ├── engram/      # Engram hash, gate kernels, fused weights, grad reduction
+│   ├── mhc/         # Low-level Manifold HyperConnection kernels
+│   ├── modeling/    # Autograd wrappers and higher-level Engram/mHC composition
+│   ├── torch/       # PyTorch reference implementations
+│   ├── testing/     # Test data, numeric checks, benchmark helpers
+│   ├── config.py    # Runtime kernel configuration such as SM count
+│   └── utils.py     # Shared utility helpers
+├── tests/
+│   ├── quant/       # Quantization and fused activation tests
+│   ├── moe/         # Routing and fused MoE layout tests
+│   ├── transpose/   # Transpose tests and benchmarks
+│   ├── engram/      # Engram hash/gate/gradient tests
+│   └── mhc/         # Manifold HyperConnection tests
+├── puzzles/
+│   ├── common/      # Puzzle loading and CUDA helpers
+│   └── levels/      # Standalone TileLang learning exercises
+├── docs/            # Project notes and generated interface documentation
+├── pyproject.toml   # Package metadata and dependency declarations
+└── README.md
 ```
+
+### Package Entry Points
+
+- `tile_kernels.quant`: quantization, dequantization, and fused SwiGLU kernels.
+- `tile_kernels.moe`: expert routing, fused mapping, dispatch, and reduction.
+- `tile_kernels.transpose`: 2D and batched transpose wrappers.
+- `tile_kernels.engram`: low-level Engram kernels.
+- `tile_kernels.modeling`: autograd-level Engram and mHC APIs.
+- `tile_kernels.torch`: PyTorch reference implementations.
+- `tile_kernels.testing`: numeric checks, generators, and benchmark helpers.
+
+## Development Notes
+
+- Set `TK_PRINT_KERNEL_SOURCE=1` to print generated TileLang kernel source from
+  most wrapper calls.
+- Tests use PyTorch references to check correctness and optional benchmark
+  helpers to record throughput or bandwidth.
+- Puzzle starter files are intentionally learner-owned and may contain
+  incomplete code.
 
 ## Acknowledgement
 
-This project is built on [TileLang](https://github.com/tile-ai/tilelang). Thanks and respect to the developers!
+This project is built on [TileLang](https://github.com/tile-ai/tilelang).
+Thanks and respect to the TileLang developers.
 
 ## License
 
-This code repository is released under [the MIT License](LICENSE).
+This repository is released under the [MIT License](LICENSE).
 
 ## Citation
 
