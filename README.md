@@ -70,26 +70,37 @@ restored = tile_kernels.quant.per_token_cast_back(
 Run a correctness test file:
 
 ```bash
-pytest tests/transpose/test_transpose.py -n 4
+python -m pytest tests/transpose/test_transpose.py -n 4
 ```
 
 Run correctness and benchmarks for one file:
 
 ```bash
-pytest tests/transpose/test_transpose.py --run-benchmark
+python -m pytest tests/transpose/test_transpose.py --run-benchmark
 ```
+
+Run benchmarks with a lightweight Nsight Compute pass:
+
+```bash
+python -m pytest tests/transpose/test_transpose.py --run-benchmark -m benchmark --ncu-profile
+```
+
+By default `--ncu-profile` re-runs the same pytest invocation under `ncu`,
+collects the `basic` set for one matching kernel launch, and writes a
+`.ncu-rep` file under `ncu-reports/`.  Use `--ncu-kernel-name regex:<name>`,
+`--ncu-launch-skip <N>`, or `--ncu-launch-count <N>` to narrow the capture.
 
 Run a broader pressure test:
 
 ```bash
-TK_FULL_TEST=1 pytest -n 4 --count 2
+TK_FULL_TEST=1 python -m pytest -n 4 --count 2
 ```
 
 Run a TileLang puzzle test:
 
 ```bash
-pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
-TK_PUZZLE_IMPL=starter pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
+python -m pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
+TK_PUZZLE_IMPL=starter python -m pytest puzzles/levels/l03_reduction/stable_topk/test_stable_topk.py
 ```
 
 ## Documentation

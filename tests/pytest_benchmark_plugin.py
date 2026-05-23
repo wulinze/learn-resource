@@ -11,7 +11,13 @@ prevents pluggy's duplicate-registration error.
 import json
 import math
 import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
 import threading
+from datetime import datetime
 
 import pytest
 import torch
@@ -24,6 +30,8 @@ _BASELINES_PATH = os.path.join(os.path.dirname(__file__), 'benchmark_baselines.j
 
 # Prefix stripped from pytest node IDs to form stable, short keys
 _TILE_KERNELS_PREFIX = os.path.join('tests', '')
+
+_NCU_REEXEC_ENV = 'TK_NCU_REEXEC'
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +62,189 @@ def pytest_addoption(parser):
         default=False,
         help='Show extras columns (e.g., speedup, …) in the benchmark regression report',
     )
+    parser.addoption(
+        '--ncu-profile',
+        action='store_true',
+        default=False,
+        help='Re-run this pytest invocation under Nsight Compute for a lightweight benchmark profile',
+    )
+    parser.addoption(
+        '--ncu-path',
+        default=None,
+        help='Path to the ncu executable (default: resolve from PATH)',
+    )
+    parser.addoption(
+        '--ncu-output-dir',
+        default='ncu-reports',
+        help='Directory for Nsight Compute .ncu-rep reports',
+    )
+    parser.addoption(
+        '--ncu-output-name',
+        default=None,
+        help='Base name for the Nsight Compute report (default: timestamp plus pytest target)',
+    )
+    parser.addoption(
+        '--ncu-set',
+        default='basic',
+        help='Nsight Compute section set to collect (default: basic)',
+    )
+    parser.addoption(
+        '--ncu-launch-count',
+        default=1,
+        type=int,
+        help='Number of matching kernel launches to profile (default: 1)',
+    )
+    parser.addoption(
+        '--ncu-launch-skip',
+        default=0,
+        type=int,
+        help='Number of matching kernel launches to skip before profiling (default: 0)',
+    )
+    parser.addoption(
+        '--ncu-kernel-name',
+        default=None,
+        help='Optional Nsight Compute kernel-name filter, e.g. regex:per_token_cast',
+    )
+    parser.addoption(
+        '--ncu-kernel-name-base',
+        default='demangled',
+        help='Kernel-name basis for Nsight Compute filters and output (default: demangled)',
+    )
+    parser.addoption(
+        '--ncu-target-processes',
+        default='application-only',
+        help='Nsight Compute target process mode (default: application-only)',
+    )
+    parser.addoption(
+        '--ncu-print-summary',
+        default='per-kernel',
+        help='Nsight Compute summary mode (default: per-kernel)',
+    )
+
+
+def pytest_cmdline_main(config):
+    if not config.getoption('--ncu-profile'):
+        return None
+    if os.environ.get(_NCU_REEXEC_ENV) == '1':
+        return None
+
+    ncu_path = config.getoption('--ncu-path') or shutil.which('ncu')
+    if not ncu_path:
+        raise pytest.UsageError('Unable to find ncu. Pass --ncu-path or add ncu to PATH.')
+
+    output_dir = config.getoption('--ncu-output-dir')
+    os.makedirs(output_dir, exist_ok=True)
+    output_name = config.getoption('--ncu-output-name') or _default_ncu_output_name(config.invocation_params.args)
+    output_base = os.path.join(output_dir, _sanitize_ncu_name(output_name))
+
+    cmd = _build_ncu_command(
+        ncu_path=ncu_path,
+        python_executable=sys.executable,
+        pytest_args=config.invocation_params.args,
+        output_base=output_base,
+        ncu_set=config.getoption('--ncu-set'),
+        launch_count=config.getoption('--ncu-launch-count'),
+        launch_skip=config.getoption('--ncu-launch-skip'),
+        kernel_name=config.getoption('--ncu-kernel-name'),
+        kernel_name_base=config.getoption('--ncu-kernel-name-base'),
+        target_processes=config.getoption('--ncu-target-processes'),
+        print_summary=config.getoption('--ncu-print-summary'),
+    )
+
+    print(f'NCU profile command: {shlex.join(cmd)}')
+    print(f'NCU report: {output_base}.ncu-rep')
+    return subprocess.run(cmd, env=_make_ncu_env()).returncode
+
+
+def _build_ncu_command(
+    *,
+    ncu_path,
+    python_executable,
+    pytest_args,
+    output_base,
+    ncu_set,
+    launch_count,
+    launch_skip,
+    kernel_name,
+    kernel_name_base,
+    target_processes,
+    print_summary,
+):
+    cmd = [
+        ncu_path,
+        '-f',
+        '-o',
+        output_base,
+        '--set',
+        ncu_set,
+        '--target-processes',
+        target_processes,
+        '--launch-count',
+        str(launch_count),
+        '--kernel-name-base',
+        kernel_name_base,
+        '--print-summary',
+        print_summary,
+    ]
+    if launch_skip:
+        cmd.extend(['--launch-skip', str(launch_skip)])
+    if kernel_name:
+        cmd.extend(['--kernel-name', kernel_name])
+    cmd.extend([python_executable, '-m', 'pytest', *pytest_args])
+    return cmd
+
+
+def _make_ncu_env(base_env=None):
+    env = dict(base_env if base_env is not None else os.environ)
+    env[_NCU_REEXEC_ENV] = '1'
+    return env
+
+
+def _default_ncu_output_name(pytest_args):
+    target = _first_pytest_target(pytest_args)
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    return f'{stamp}-{target}'
+
+
+def _first_pytest_target(pytest_args):
+    options_with_values = {
+        '-k',
+        '-m',
+        '-n',
+        '--benchmark-output',
+        '--benchmark-regression-threshold',
+        '--ncu-path',
+        '--ncu-output-dir',
+        '--ncu-output-name',
+        '--ncu-set',
+        '--ncu-launch-count',
+        '--ncu-launch-skip',
+        '--ncu-kernel-name',
+        '--ncu-kernel-name-base',
+        '--ncu-target-processes',
+        '--ncu-print-summary',
+    }
+    skip_next = False
+    for arg in pytest_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in options_with_values:
+            skip_next = True
+            continue
+        if arg.startswith('--') and '=' in arg:
+            continue
+        if arg.startswith('-'):
+            continue
+        return arg
+    return 'pytest'
+
+
+def _sanitize_ncu_name(name):
+    sanitized = re.sub(r'[^A-Za-z0-9_.-]+', '-', name).strip('-')
+    if not sanitized:
+        return 'pytest'
+    return sanitized[:180].rstrip('-')
 
 
 # ---------------------------------------------------------------------------
@@ -473,5 +664,4 @@ def _load_baselines():
             rec = json.loads(line)
             baselines[_make_key(rec)] = rec
     return baselines
-
 
