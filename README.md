@@ -105,6 +105,8 @@ TK_PUZZLE_IMPL=starter python -m pytest puzzles/levels/l03_reduction/stable_topk
 
 ## Documentation
 
+- [TileLang API cheatsheet](docs/tilelang_api_cheatsheet.md): centralized DSL
+  reference for writing and reading TileLang kernels.
 - [TileLang function interfaces](docs/tilelang_function_interfaces.md): public
   wrappers, internal JIT factories, macros, and usage scenarios.
 - [TileLang puzzle project](docs/tilelang_puzzle_project.md): learning roadmap
